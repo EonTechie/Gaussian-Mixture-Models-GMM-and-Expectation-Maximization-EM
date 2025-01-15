@@ -1,156 +1,131 @@
 # Github : EonTechie
 
-import random
-from math import comb
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import multivariate_normal
 
-# Calculates the probability of getting a certain number of 'Heads' in a sequence using the binomial distribution.
-def binomial_probability(heads, flips, bias_head): # heads: Number of 'H' observed , flips: Total number of flips (e.g., 10 flips) , bias_head: Probability of getting 'H' in a single flip (e.g., 0.5)  
-    # Likelihood calculation using the binomial formula
-    likelihood = comb(flips, heads) * (bias_head ** heads) * ((1 - bias_head) ** (flips - heads))
-    return likelihood
+###### Step 1: Generate Random Dataset ######
 
-def generate_coin_data(num_sequences=10, prob_choose_a=0.5, a_bias=0.6, b_bias=0.5):
-    """
-    Generate coin flip sequences based on known biases and priors.
+# Set random seed for reproducibility
+np.random.seed(42)
+
+# Generate random centers for 3 clusters
+num_clusters = 3
+cluster_centers = np.random.uniform(-5, 15, size=(num_clusters, 2))  # Random means in range [-5, 15]
+
+# Generate random isotropic covariance matrices (scale factors)
+covariances = [np.eye(2) * np.random.uniform(1.0, 3.0) for _ in range(num_clusters)]
+
+# Random sample sizes between 200 and 400
+samples_per_cluster = [np.random.randint(200, 401) for _ in range(num_clusters)]
+
+# Generate data for each cluster
+data = []
+for mean, cov, n in zip(cluster_centers, covariances, samples_per_cluster):
+    cluster_data = np.random.multivariate_normal(mean, cov, n)
+    data.append(cluster_data)
+data = np.vstack(data)
+
+# Visualize the generated data
+plt.scatter(data[:, 0], data[:, 1], s=5)
+plt.title("Generated Data (Random Clusters and Covariances)")
+plt.xlabel("X1")
+plt.ylabel("X2")
+plt.show()
+
+###### Step 2: Multivariate Gaussian PDF ######
+
+def multivariate_gaussian(x, mean, cov):
+    """Compute Multivariate Gaussian PDF."""
+    d = mean.shape[0]
+    det = np.linalg.det(cov)
+    inv = np.linalg.inv(cov)
+    diff = x - mean
+    exponent = -0.5 * np.sum(diff @ inv * diff, axis=1)
+    return np.exp(exponent) / (np.sqrt((2 * np.pi) ** d * det))
+
+###### Step 3: EM Algorithm ######
+
+def initialize_parameters(data, k):
+    """Initialize means, covariances, and weights randomly."""
+    n_samples, n_features = data.shape
     
-    Parameters:
-        num_sequences (int): Number of sequences to generate.
-        prob_choose_a (float): Prior probability of choosing Coin A.
-        a_bias (float): Bias (probability of heads) for Coin A.
-        b_bias (float): Bias (probability of heads) for Coin B.
+    # Randomly select data points as initial means
+    means = data[np.random.choice(n_samples, k, replace=False)]
+    
+    # Random isotropic covariance matrices
+    covariances = [np.eye(n_features) * np.random.uniform(1.0, 3.0) for _ in range(k)]
+    
+    # Random weights normalized to sum to 1
+    weights = np.random.rand(k)
+    weights /= weights.sum()
+    
+    return means, covariances, weights
 
-    Returns:
-        list: List of tuples with ('unknown', sequence).
-    """
-    data = []
-    for _ in range(num_sequences):
-        # Decide the coin based on prior probabilities
-        coin_bias = a_bias if random.random() < prob_choose_a else b_bias  # Select Coin A or Coin B based on prior
-        sequence = ''.join(['H' if random.random() < coin_bias else 'T' for _ in range(10)])  # Generate flips
-        data.append(('unknown', sequence))  # Append with 'unknown' label
-    return data
+def e_step(data, means, covariances, weights, k):
+    """E-Step: Compute E_probabilities."""
+    n_samples = len(data)
+    E_probabilities = np.zeros((n_samples, k))
+    for i in range(k):
+        E_probabilities[:, i] = weights[i] * multivariate_gaussian(data, means[i], covariances[i])
+    E_probabilities /= E_probabilities.sum(axis=1, keepdims=True)
+    return E_probabilities
 
-def count_heads_and_tails(data):
-    """
-    Count the number of heads and tails in each sequence.
+def m_step(data, E_probabilities, k):
+    """M-Step: Update parameters."""
+    n_samples, n_features = data.shape
+    new_means = np.zeros((k, n_features))
+    new_covariances = []
+    new_weights = np.zeros(k)
 
-    Parameters:
-        data (list): List of tuples with coin labels and sequences.
+    for i in range(k):
+        resp_sum = E_probabilities[:, i].sum()
+        new_means[i] = (E_probabilities[:, i][:, None] * data).sum(axis=0) / resp_sum
+        diff = data - new_means[i]
+        cov = (E_probabilities[:, i][:, None] * diff).T @ diff / resp_sum
+        new_covariances.append(np.eye(n_features) * np.mean(np.diag(cov)))  # Enforce isotropic covariance
+        new_weights[i] = resp_sum / n_samples
+    
+    return new_means, new_covariances, new_weights
 
-    Returns:
-        list: Processed results with counts of heads and tails.
-    """
-    results = []
-    for coin, sequence in data:
-        heads_count = sequence.count('H')  # Count the number of H in the sequence
-        tails_count = sequence.count('T')  # Count the number of T in the sequence
-        results.append({
-            'coin': coin,
-            'sequence': sequence,
-            'heads_count': heads_count,
-            'tails_count': tails_count
-        })
-    return results
-
-def em_algorithm(sequences, max_iter=100, tol=1e-6):
-    """
-    Expectation-Maximization (EM) algorithm to estimate parameters of coin biases.
-
-    Parameters:
-        sequences (list): List of sequences of coin flips.
-        max_iter (int): Maximum number of iterations.
-        tol (float): Tolerance for convergence.
-
-    Returns:
-        tuple: Estimated biases (Q_A, Q_B) and posterior probabilities (Posterior_A, Posterior_B).
-    """
-    # Initial parameters
-    Q_A = 0.6  # Probability of Heads for Coin A
-    Q_B = 0.5  # Probability of Heads for Coin B
-    P_A = 0.5  # Prior probability of choosing Coin A
-    P_B = 0.5  # Prior probability of choosing Coin B
+def em_algorithm(data, k, max_iter=100, tol=1e-4):
+    """EM Algorithm for Gaussian Mixture Models."""
+    means, covariances, weights = initialize_parameters(data, k)
     
     for iteration in range(max_iter):
-        # E Step: Calculate probabilities of belonging to Coin A and Coin B
-        Posterior_A = []
-        Posterior_B = []
+        # E-Step
+        E_probabilities = e_step(data, means, covariances, weights, k)
         
-        print(f"Iteration: {iteration+1}")
-        print("- Expectation Step\n") 
+        # M-Step
+        new_means, new_covariances, new_weights = m_step(data, E_probabilities, k)
         
-        for sequence in sequences:
-            heads = sequence.count('H')
-            tails = sequence.count('T')
-            flips = heads + tails
-
-            # Calculate likelihoods (including binomial coefficients)
-            joint_probability_A = binomial_probability(heads, flips, Q_A) * P_A
-            joint_probability_B = binomial_probability(heads, flips, Q_B) * P_B
-            
-            # Normalize to find Q values
-            total_probability = joint_probability_A + joint_probability_B
-            Posterior_A.append(joint_probability_A / total_probability)
-            Posterior_B.append(joint_probability_B / total_probability)
-            
-            print(f"Sequence: {sequence}")
-            
-            # Likelihood
-            print(f"  Likelihood (A): P(S | A) = {binomial_probability(heads, flips, Q_A):.4f}, Likelihood (B): P(S | B) = {binomial_probability(heads, flips, Q_B):.4f}")
-
-            # Joint Probability (Likelihood × Prior)
-            print(f"  Joint Probability (A): P(S, A) = {joint_probability_A:.4f} ,  Joint Probability (B): P(S, B) = {joint_probability_B:.4f} ")
-            # Posterior Probability (Normalized)
-            print(f"  Posterior Probability: P(A | S) = {joint_probability_A / total_probability:.4f}, P(B | S) = {joint_probability_B / total_probability:.4f}")
-
-            # Number of Heads attributed to A and B
-            print(f" #Heads Attributed to A : {sequence.count('H')} * P(A | S) = {sequence.count('H')*(joint_probability_A / total_probability)}, #Heads Attributed to B = {(sequence.count('H')*joint_probability_B / total_probability)}\n")
-            
-        print("Maximization Step:\n")
-        
-        # M Step: Update Q_A and Q_B (calculate heads attributed to A and heads attributed to B , and update bias)
-        updated_Q_A = sum(Posterior_A[i] * sequences[i].count('H') for i in range(len(sequences))) / \
-                    sum(Posterior_A[i] * len(sequences[i]) for i in range(len(sequences)))
-
-        updated_Q_B = sum(Posterior_B[i] * sequences[i].count('H') for i in range(len(sequences))) / \
-                    sum(Posterior_B[i] * len(sequences[i]) for i in range(len(sequences)))
-        
-        # Print Updated biases
-        print(f"Updated Q_A:{updated_Q_A}\nUpdated Q_B {updated_Q_B}\n")
-        
-        # Print convergence constraint
-        print(f"Change_in_QA:{abs(updated_Q_A - Q_A)}\nChange_in_QB: {abs(updated_Q_B - Q_B)}\n")
-        
-        # Stopping criteria
-        if abs(updated_Q_A - Q_A) < tol and abs(updated_Q_B - Q_B) < tol:
+        # Convergence check
+        if np.linalg.norm(new_means - means) < tol:
+            print(f"Converged at iteration {iteration + 1}")
             break
+        
+        means, covariances, weights = new_means, new_covariances, new_weights
+    
+    return means, covariances, weights
 
-        # Update parameters
-        Q_A = updated_Q_A
-        Q_B = updated_Q_B
+###### Step 4: Plot Gaussian Contours ######
 
-    return Q_A, Q_B, Posterior_A, Posterior_B
+def plot_gaussian_contours(data, means, covariances):
+    x, y = np.meshgrid(np.linspace(-10, 20, 100), np.linspace(-10, 20, 100))
+    pos = np.dstack((x, y))
 
-# Generate 10 sequences of coin flips
-data = generate_coin_data(10)  # Generate 10 sets of data
-results = count_heads_and_tails(data)
-sequences = [result['sequence'] for result in results]
+    plt.scatter(data[:, 0], data[:, 1], s=5)
+    for mean, cov in zip(means, covariances):
+        rv = multivariate_normal(mean, cov)
+        plt.contour(x, y, rv.pdf(pos), levels=5, colors='red')
+    
+    plt.title("Gaussian Contours After EM")
+    plt.xlabel("X1")
+    plt.ylabel("X2")
+    plt.show()
 
-# Apply EM algorithm to estimate parameters
-Q_A, Q_B, Posterior_A, Posterior_B = em_algorithm(sequences)
+###### Step 5: Run EM Algorithm and Plot ######
 
-# Final results after convergence
-print("After all EM steps implemented until it converges:\n")
-print(f"Final Q_A (Head Probability for Coin A): {Q_A:.4f}\n")
-print(f"Final Q_B (Head Probability for Coin B): {Q_B:.4f}\n")
-
-# Determine which coin each sequence belongs to using the last found values after EM algorithm
-assignments = []  # List to store sequence assignments to coins
-for i, sequence in enumerate(sequences):
-    if Posterior_A[i] > Posterior_B[i]:  # If Q_A value is greater, assign to Coin A
-        assignments.append(('A', sequence))
-    else:  # Otherwise, assign to Coin B
-        assignments.append(('B', sequence))
-
-# Print sequence assignments to coins
-for coin, sequence in assignments:
-    print(f"Sequence: {sequence} is likely to be Coin {coin}")
+k = 3  # Number of clusters
+means, covariances, weights = em_algorithm(data, k)
+plot_gaussian_contours(data, means, covariances)
